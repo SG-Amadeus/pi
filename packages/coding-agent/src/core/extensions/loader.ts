@@ -193,6 +193,11 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		getActiveTools: notInitialized,
 		getAllTools: notInitialized,
 		setActiveTools: notInitialized,
+		getModes: notInitialized,
+		getActiveMode: notInitialized,
+		getModePhase: notInitialized,
+		setMode: notInitialized,
+		clearMode: notInitialized,
 		// registerTool() is valid during extension load; refresh is only needed post-bind.
 		refreshTools: () => {},
 		getCommands: notInitialized,

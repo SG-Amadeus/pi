@@ -20,6 +20,7 @@ import type {
 	LoadExtensionsResult,
 } from "../src/core/extensions/index.ts";
 import { createExtensionRuntime, loadExtensionFromFactory } from "../src/core/extensions/loader.ts";
+import type { SessionStartEvent } from "../src/core/extensions/types.ts";
 import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -162,6 +163,12 @@ export interface TestSessionOptions {
 	systemPrompt?: string;
 	/** Custom settings overrides */
 	settingsOverrides?: Record<string, unknown>;
+	/** Startup agent mode preset (e.g. "minimal") */
+	agentMode?: string;
+	/** Session start event metadata (e.g. to simulate resume) */
+	sessionStartEvent?: SessionStartEvent;
+	/** Reuse a pre-built session manager (for resume/restore tests) */
+	sessionManager?: SessionManager;
 }
 
 /**
@@ -251,7 +258,8 @@ export async function createTestSession(options: TestSessionOptions = {}): Promi
 		streamFn: streamSimple,
 	});
 
-	const sessionManager = options.inMemory ? SessionManager.inMemory() : SessionManager.create(tempDir);
+	const sessionManager =
+		options.sessionManager ?? (options.inMemory ? SessionManager.inMemory() : SessionManager.create(tempDir));
 	const settingsManager = SettingsManager.create(tempDir, tempDir);
 
 	if (options.settingsOverrides) {
@@ -268,6 +276,8 @@ export async function createTestSession(options: TestSessionOptions = {}): Promi
 		cwd: tempDir,
 		modelRuntime: getModelRuntime(modelRegistry),
 		resourceLoader: createTestResourceLoader(),
+		agentMode: options.agentMode,
+		sessionStartEvent: options.sessionStartEvent,
 	});
 
 	// Must subscribe to enable session persistence

@@ -121,6 +121,7 @@ export interface Settings {
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
 	defaultTools?: string[]; // Initial built-in tool selection
+	defaultMode?: string; // Agent mode preset to apply at startup (e.g. "minimal")
 	doubleEscapeAction?: "fork" | "tree" | "none"; // Action for double-escape with empty editor (default: "tree")
 	treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all"; // Default filter when opening /tree
 	thinkingBudgets?: ThinkingBudgetsSettings; // Custom token budgets for thinking levels
@@ -1192,6 +1193,11 @@ export class SettingsManager {
 	getDefaultTools(): string[] | undefined {
 		const tools = this.settings.defaultTools;
 		return tools ? [...tools] : undefined;
+	}
+
+	/** Agent mode preset to apply at startup, if configured. */
+	getDefaultMode(): string | undefined {
+		return this.settings.defaultMode;
 	}
 
 	setEnabledModels(patterns: string[] | undefined): void {

@@ -2919,6 +2919,12 @@ export class InteractiveMode {
 				await this.handleModelCommand(searchTerm);
 				return;
 			}
+			if (text === "/mode" || text.startsWith("/mode ")) {
+				const modeName = text.startsWith("/mode ") ? text.slice(6).trim() : undefined;
+				this.editor.setText("");
+				await this.handleModeCommand(modeName);
+				return;
+			}
 			if (text === "/export" || text.startsWith("/export ")) {
 				await this.handleExportCommand(text);
 				this.editor.setText("");
@@ -6039,6 +6045,60 @@ export class InteractiveMode {
 		}
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(new Text(theme.fg("dim", `Session name set: ${sessionName ?? name}`), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private async handleModeCommand(modeName: string | undefined): Promise<void> {
+		const modes = this.session.getModes();
+		if (!modeName) {
+			const active = this.session.getActiveMode();
+			const phase = this.session.getModePhase();
+			this.chatContainer.addChild(new Spacer(1));
+			if (active) {
+				this.chatContainer.addChild(
+					new Text(theme.fg("dim", `Active mode: ${active.name} (${phase}). Run /mode <name> to switch.`), 1, 0),
+				);
+			} else {
+				this.chatContainer.addChild(
+					new Text(theme.fg("dim", `No active mode. Run /mode <name> to enable one.`), 1, 0),
+				);
+			}
+			for (const mode of modes) {
+				const mark = active?.name === mode.name ? "*" : " ";
+				this.chatContainer.addChild(
+					new Text(theme.fg("muted", `${mark} ${mode.name} — ${mode.description ?? mode.systemPrompt}`), 1, 0),
+				);
+			}
+			this.ui.requestRender();
+			return;
+		}
+
+		if (modeName.toLowerCase() === "none" || modeName.toLowerCase() === "off") {
+			this.session.clearMode();
+			this.chatContainer.addChild(new Spacer(1));
+			this.chatContainer.addChild(new Text(theme.fg("dim", "Agent mode cleared; default behavior restored."), 1, 0));
+			this.ui.requestRender();
+			return;
+		}
+
+		const applied = this.session.setMode(modeName);
+		this.chatContainer.addChild(new Spacer(1));
+		if (applied) {
+			this.chatContainer.addChild(
+				new Text(
+					theme.fg(
+						"success",
+						`Mode "${modeName}" active (bootstrap). Initial tools: ${this.session.getActiveToolNames().join(", ")}`,
+					),
+					1,
+					0,
+				),
+			);
+		} else {
+			this.chatContainer.addChild(
+				new Text(theme.fg("error", `Unknown mode "${modeName}". Run /mode to list available modes.`), 1, 0),
+			);
+		}
 		this.ui.requestRender();
 	}
 

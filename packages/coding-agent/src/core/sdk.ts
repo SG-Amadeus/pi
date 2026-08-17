@@ -71,6 +71,8 @@ export interface CreateAgentSessionOptions {
 	tools?: string[];
 	/** Optional denylist of tool names to disable. Applies after `tools` when both are provided. */
 	excludeTools?: string[];
+	/** Agent mode preset to apply at startup (e.g. "minimal"). Enables the mode's bootstrap lifecycle immediately. */
+	agentMode?: string;
 	/** Custom tools to register (in addition to built-in tools). */
 	customTools?: ToolDefinition[];
 
@@ -252,6 +254,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	const initialActiveToolNames = (
 		options.tools ?? (options.noTools ? [] : (configuredDefaultToolNames ?? defaultActiveToolNames))
 	).filter((name) => !excludedToolNameSet?.has(name));
+	// Agent mode precedence: CLI `--agent-mode` overrides the `defaultMode` setting.
+	const agentMode = options.agentMode ?? settingsManager.getDefaultMode();
 
 	let agent: Agent;
 
@@ -388,6 +392,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		initialActiveToolNames,
 		allowedToolNames,
 		excludedToolNames,
+		agentMode,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
 	});

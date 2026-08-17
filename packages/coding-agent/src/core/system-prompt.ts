@@ -18,6 +18,11 @@ export interface BuildSystemPromptOptions {
 	appendSystemPrompt?: string;
 	/** Working directory. */
 	cwd: string;
+	/**
+	 * Whether to append a `Current working directory:` line. Defaults to `true`.
+	 * Disabled by minimal modes so bootstrap carries only the persona.
+	 */
+	includeCwd?: boolean;
 	/** Pre-loaded context files. */
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
@@ -37,6 +42,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 		skills: providedSkills,
 	} = options;
 	const promptCwd = cwd.replace(/\\/g, "/");
+
+	const includeCwd = options.includeCwd ?? true;
 
 	const appendSection = appendSystemPrompt ? `\n\n${appendSystemPrompt}` : "";
 
@@ -66,12 +73,12 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 			prompt += formatSkillsForPrompt(skills);
 		}
 
-		prompt += `\nCurrent working directory: ${promptCwd}\n`;
+		if (includeCwd && promptCwd) {
+			prompt += `\nCurrent working directory: ${promptCwd}\n`;
+		}
 
 		return prompt;
-	}
-
-	// Get absolute paths to documentation and examples
+	} // Get absolute paths to documentation and examples
 	const readmePath = getReadmePath();
 	const docsPath = getDocsPath();
 	const examplesPath = getExamplesPath();
@@ -156,7 +163,9 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		prompt += formatSkillsForPrompt(skills);
 	}
 
-	prompt += `\nCurrent working directory: ${promptCwd}`;
+	if (includeCwd && promptCwd) {
+		prompt += `\nCurrent working directory: ${promptCwd}`;
+	}
 
 	return prompt;
 }

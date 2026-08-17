@@ -55,6 +55,7 @@ import type { KeybindingsManager } from "../keybindings.ts";
 import type { CustomMessage } from "../messages.ts";
 import type { ModelRegistry } from "../model-registry.ts";
 import type { ScopedModel } from "../model-resolver.ts";
+import type { ModePhase } from "../modes.ts";
 import type {
 	BranchSummaryEntry,
 	CompactionEntry,
@@ -1342,6 +1343,21 @@ export interface ExtensionAPI {
 	/** Set the active tools by name. */
 	setActiveTools(toolNames: string[]): void;
 
+	/** All known agent modes, in `/mode` listing order. */
+	getModes(): AgentModeMetadata[];
+
+	/** The mode name currently applied, if any. */
+	getActiveMode(): string | undefined;
+
+	/** The current phase (`bootstrap` or `resident`) while a mode is active. */
+	getModePhase(): ModePhase;
+
+	/** Apply an agent mode by name. Returns false if the name is unknown. */
+	setMode(name: string): boolean;
+
+	/** Exit the active mode, restoring default behavior. */
+	clearMode(): void;
+
 	/** Get available slash commands in the current session. */
 	getCommands(): SlashCommandInfo[];
 
@@ -1583,6 +1599,21 @@ export type GetCommandsHandler = () => SlashCommandInfo[];
 
 export type SetActiveToolsHandler = (toolNames: string[]) => void;
 
+/** Shallow metadata for an agent mode, safe to expose to extensions. */
+export interface AgentModeMetadata {
+	name: string;
+	description?: string;
+	systemPrompt: string;
+	initialTools: string[];
+	phase: ModePhase;
+}
+
+export type GetModesHandler = () => AgentModeMetadata[];
+export type GetActiveModeHandler = () => string | undefined;
+export type GetModePhaseHandler = () => ModePhase;
+export type SetModeHandler = (name: string) => boolean;
+export type ClearModeHandler = () => void;
+
 export type RefreshToolsHandler = () => void;
 
 export type SetModelHandler = (model: Model<any>) => Promise<boolean>;
@@ -1635,6 +1666,11 @@ export interface ExtensionActions {
 	getAllTools: GetAllToolsHandler;
 	setActiveTools: SetActiveToolsHandler;
 	refreshTools: RefreshToolsHandler;
+	getModes: GetModesHandler;
+	getActiveMode: GetActiveModeHandler;
+	getModePhase: GetModePhaseHandler;
+	setMode: SetModeHandler;
+	clearMode: ClearModeHandler;
 	getCommands: GetCommandsHandler;
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;

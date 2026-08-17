@@ -544,6 +544,9 @@ function buildSessionOptions(
 	if (parsed.excludeTools) {
 		options.excludeTools = [...parsed.excludeTools];
 	}
+	if (parsed.agentMode) {
+		options.agentMode = parsed.agentMode;
+	}
 
 	return { options, cliThinkingFromModel, diagnostics };
 }

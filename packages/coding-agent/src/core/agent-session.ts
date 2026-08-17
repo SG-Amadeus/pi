@@ -94,9 +94,22 @@ import {
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
+import type { AgentModeMetadata } from "./extensions/types.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import { type AgentMode, DEFAULT_MODES, findMode, type ModePhase } from "./modes.ts";
+
+/** Session custom-entry type used to persist agent mode state for resume safety. */
+const MODE_STATE_ENTRY_TYPE = "pi.mode";
+
+/** Persisted shape of the active agent mode, written to the session file. */
+interface ModeState {
+	name: string;
+	phase: ModePhase;
+	tools: string[];
+}
+
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
@@ -214,6 +227,8 @@ export interface AgentSessionConfig {
 	allowedToolNames?: string[];
 	/** Optional denylist of tool names. When provided, these tool names are not exposed. */
 	excludedToolNames?: string[];
+	/** Optional agent mode preset to apply at startup (e.g. "minimal"). */
+	agentMode?: string;
 	/**
 	 * Override base tools (useful for custom runtimes).
 	 *
@@ -374,6 +389,12 @@ export class AgentSession {
 	private _baseSystemPromptOptions!: BuildSystemPromptOptions;
 	private _systemPromptOverride?: string;
 
+	// Agent modes (DeepSeek-minimal style phasing)
+	private _modes: AgentMode[] = DEFAULT_MODES;
+	private _activeMode?: AgentMode;
+	private _modePhase: ModePhase = "bootstrap";
+	private _initialModeName?: string;
+
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
@@ -389,6 +410,7 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._initialModeName = config.agentMode;
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -400,6 +422,40 @@ export class AgentSession {
 			activeToolNames: this._initialActiveToolNames,
 			includeAllExtensionTools: true,
 		});
+
+		// Apply the startup agent mode after the tool registry exists. On a resumed
+		// session, the persisted mode state wins; otherwise use the configured
+		// default (CLI `--agent-mode` / `defaultMode` setting).
+		this._applyStartupMode();
+	}
+
+	/**
+	 * Restore mode state at session start. For resumed sessions, re-apply the last
+	 * persisted `{ mode, phase, tools }` so the session continues where it left off.
+	 * Otherwise apply the configured startup mode (bootstrap).
+	 */
+	private _applyStartupMode(): void {
+		const reason = this._sessionStartEvent?.reason;
+		if (reason === "resume" || reason === "fork") {
+			const persisted = this._readPersistedModeState();
+			// Explicitly cleared: keep it cleared, do not resurrect the default.
+			if (persisted === null) {
+				return;
+			}
+			if (persisted && this.setMode(persisted.name)) {
+				this._modePhase = persisted.phase;
+				// Restore the unlocked tool set exactly, not just the bootstrap pair.
+				const restoredTools = persisted.tools.filter((tool) => this._toolRegistry.has(tool));
+				if (restoredTools.length > 0) {
+					this.setActiveToolsByName([...new Set(restoredTools)]);
+				}
+				this._persistModeState();
+				return;
+			}
+		}
+		if (this._initialModeName) {
+			this.setMode(this._initialModeName);
+		}
 	}
 
 	get modelRuntime(): ModelRuntime {
@@ -942,6 +998,131 @@ export class AgentSession {
 		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 	}
 
+	// =========================================================================
+	// Agent modes (DeepSeek-minimal style phasing)
+	// =========================================================================
+
+	/** All known modes, in `/mode` listing order. */
+	getModes(): AgentMode[] {
+		return [...this._modes];
+	}
+
+	private _modeMetadata(): AgentModeMetadata[] {
+		return this._modes.map((mode) => ({
+			name: mode.name,
+			description: mode.description,
+			systemPrompt: mode.systemPrompt,
+			initialTools: [...mode.initialTools],
+			phase: this._activeMode?.name === mode.name ? this._modePhase : "bootstrap",
+		}));
+	}
+
+	/**
+	 * Read the last persisted mode state from the active branch.
+	 * Returns `undefined` when no entry exists, `null` when the mode was explicitly
+	 * cleared, or the persisted `ModeState` otherwise.
+	 */
+	private _readPersistedModeState(): ModeState | null | undefined {
+		for (const entry of [...this.sessionManager.getBranch()].reverse()) {
+			if (entry.type === "custom" && entry.customType === MODE_STATE_ENTRY_TYPE) {
+				return (entry.data as ModeState | undefined) ?? null;
+			}
+		}
+		return undefined;
+	}
+
+	/** Persist the current mode state to the session file so resumes can restore it. */
+	private _persistModeState(): void {
+		const mode = this._activeMode;
+		if (!mode) {
+			return;
+		}
+		const state: ModeState = {
+			name: mode.name,
+			phase: this._modePhase,
+			tools: this.getActiveToolNames(),
+		};
+		this.sessionManager.appendCustomEntry(MODE_STATE_ENTRY_TYPE, state);
+	}
+
+	/** The mode currently applied to this session, if any. */
+	getActiveMode(): AgentMode | undefined {
+		return this._activeMode;
+	}
+
+	/** The current phase (`bootstrap` or `resident`) while a mode is active. */
+	getModePhase(): ModePhase {
+		return this._modePhase;
+	}
+
+	/**
+	 * Apply a mode by name. Resets the session to bootstrap: only the mode's
+	 * `initialTools` are enabled and the system prompt is rebuilt with the mode's
+	 * persona and (during bootstrap) suppressed injections. No-op if absent.
+	 */
+	setMode(name: string): boolean {
+		const mode = findMode(this._modes, name);
+		if (!mode) {
+			return false;
+		}
+		this._activeMode = mode;
+		this._modePhase = "bootstrap";
+		const bootstrapTools = mode.initialTools.filter((tool) => this._toolRegistry.has(tool));
+		this.setActiveToolsByName(bootstrapTools);
+		this._persistModeState();
+		return true;
+	}
+
+	/** Exit the active mode, restoring default behavior. */
+	clearMode(): void {
+		if (!this._activeMode) {
+			return;
+		}
+		this._activeMode = undefined;
+		this._modePhase = "bootstrap";
+		this.setActiveToolsByName(this.getActiveToolNames());
+		// Record that the mode was cleared so a later resume does not resurrect it.
+		this.sessionManager.appendCustomEntry(MODE_STATE_ENTRY_TYPE, undefined);
+	}
+
+	/**
+	 * Advance from bootstrap to resident. Restores standard injections and enables
+	 * the full tool registry so the model can use any tool. Idempotent.
+	 */
+	private _promoteMode(_input: string): void {
+		const mode = this._activeMode;
+		if (!mode || this._modePhase !== "bootstrap") {
+			return;
+		}
+		this._modePhase = "resident";
+		this._enableAllTools();
+		this._persistModeState();
+	}
+
+	/** Enable every registered tool (deduped against the current active set). */
+	private _enableAllTools(): void {
+		const allNames =
+			this._toolRegistry.size > 0 ? [...this._toolRegistry.keys()] : this.getAllTools().map((t) => t.name);
+		this.setActiveToolsByName([...new Set([...this.getActiveToolNames(), ...allNames])]);
+	}
+
+	/**
+	 * After compaction, restart the phase cycle: reset to bootstrap and back to the
+	 * mode's initial tool set, so the next request re-runs the minimal anchoring and
+	 * re-promotes. Only acts while a mode is active. No-op for `willRetry` overflow
+	 * recovery (the interrupted turn should continue with its existing tools).
+	 */
+	private _restartModeCycle(): void {
+		const mode = this._activeMode;
+		if (!mode) {
+			return;
+		}
+		this._modePhase = "bootstrap";
+		const bootstrapTools = mode.initialTools.filter((tool) => this._toolRegistry.has(tool));
+		this.setActiveToolsByName(bootstrapTools);
+		this._persistModeState();
+	}
+
 	/** Whether compaction or branch summarization is currently running */
 	get isCompacting(): boolean {
 		return (
@@ -1052,7 +1233,33 @@ export class AgentSession {
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
-		};
+		}; // A minimal mode suppresses every automatic injection during bootstrap so
+		// the first request carries only the persona + enabled tools + the user
+		// message. Resident phase restores the standard injections (AGENTS.md
+		// digest, skills catalog, append files), still anchored on the persona.
+		const mode = this._activeMode;
+		if (mode) {
+			const bootstrap = this._modePhase === "bootstrap";
+			this._baseSystemPromptOptions = {
+				...this._baseSystemPromptOptions,
+				customPrompt: mode.systemPrompt,
+				// Bootstrap: suppress AGENTS.md digest, skills catalog and appends.
+				skills: bootstrap && mode.includeRuntimeContext === false ? [] : this._baseSystemPromptOptions.skills,
+				contextFiles:
+					bootstrap && mode.includeRuntimeContext === false ? [] : this._baseSystemPromptOptions.contextFiles,
+				appendSystemPrompt:
+					bootstrap && mode.includeRuntimeContext === false
+						? undefined
+						: this._baseSystemPromptOptions.appendSystemPrompt,
+				// Only enabled tools' snippets/snippets/guidelines are carried in either phase.
+				selectedTools: validToolNames,
+				toolSnippets,
+				promptGuidelines,
+				// Minimal modes omit the cwd line entirely (bootstrap) or keep it
+				// restored (resident) based on `includeCwd`.
+				includeCwd: mode.includeCwd ?? true,
+			};
+		}
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
 
@@ -1117,6 +1324,8 @@ export class AgentSession {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
+		// Hoisted so mode unlock/promote can read it after the try block completes.
+		let expandedText: string | undefined;
 
 		try {
 			// Handle extension commands first (execute immediately, even during streaming)
@@ -1157,7 +1366,7 @@ export class AgentSession {
 			}
 
 			// Expand skill commands (/skill:name args) and prompt templates (/template args)
-			let expandedText = currentText;
+			expandedText = currentText;
 			if (expandPromptTemplates) {
 				expandedText = this._expandSkillCommand(expandedText);
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
@@ -1268,8 +1477,18 @@ export class AgentSession {
 			return;
 		}
 
+		// Resident phase: the full tool registry is already active after promotion,
+		// so nothing to unlock here.
+
 		preflightResult?.(true);
 		await this._runAgentPrompt(messages);
+
+		// A mode is active: after the first bootstrap turn completes (a tool call or
+		// assistant message happened), promote to resident so standard injections
+		// restore and the full tool registry is enabled.
+		if (expandedText !== undefined && this._activeMode && this._modePhase === "bootstrap") {
+			this._promoteMode(expandedText);
+		}
 	}
 
 	/**
@@ -1906,6 +2125,7 @@ export class AgentSession {
 					willRetry: false,
 				});
 			}
+			this._restartModeCycle();
 
 			const compactionResult: CompactionResult = {
 				summary,
@@ -2202,6 +2422,10 @@ export class AgentSession {
 					willRetry,
 				});
 			}
+			// Restart the mode cycle (bootstrap) unless overflow recovery retries the turn.
+			if (!willRetry) {
+				this._restartModeCycle();
+			}
 
 			const result: CompactionResult = {
 				summary,
@@ -2430,6 +2654,11 @@ export class AgentSession {
 				getAllTools: () => this.getAllTools(),
 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
 				refreshTools: () => this._refreshToolRegistry(),
+				getModes: () => this._modeMetadata(),
+				getActiveMode: () => this._activeMode?.name,
+				getModePhase: () => this._modePhase,
+				setMode: (name) => this.setMode(name),
+				clearMode: () => this.clearMode(),
 				getCommands,
 				setModel: async (model) => {
 					if (!this._modelRuntime.hasConfiguredAuth(model.provider)) return false;
