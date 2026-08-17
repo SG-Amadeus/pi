@@ -10,7 +10,42 @@
 
 > New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+# Pi — Deep Minimal Edition
+
+> This is a **fork of the [Pi agent harness](https://github.com/earendil-works/pi)** (the original README is preserved below). It adds one focused feature on top of upstream Pi: a **deep-minimal agent mode** ported from DeepSeek's "minimal" agent.
+
+## Deep Minimal Mode
+
+DeepSeek's minimal agent starts a session with a tiny system prompt and only the essential tools, then unlocks the full toolset once the session is underway. This fork implements that as switchable **agent modes** with a two-phase lifecycle:
+
+1. **bootstrap** — the first request in a session. The system prompt is exactly the mode's short persona (`You are a helpful software engineer assistant.`) with nothing stacked on top. Only the mode's `initialTools` (`bash`, `edit`) are enabled. Every automatic injection is suppressed: the `AGENTS.md` digest, `APPEND_SYSTEM.md`, the skills catalog, pi-docs reminders, and per-tool guidelines. The current working directory line is omitted so the bootstrap payload stays minimal.
+2. **resident** — every later request. Standard injections are restored and the full tool registry is re-enabled, so the model gets whatever it needs to finish the task.
+
+A mode is inert until applied: sessions without an active mode behave exactly like upstream Pi.
+
+### Using modes
+
+- **CLI startup**: `pi --agent-mode minimal` applies mode `minimal` on the first request.
+- **Interactive slash command**:
+  - `/mode` — list available modes and show the active one.
+  - `/mode <name>` — apply a mode (the current session enters bootstrap).
+  - `/mode none` or `/mode off` — clear the active mode, restoring default behavior.
+- **Resume-safe**: the active mode and phase are persisted to the session file, so resuming a session re-applies the exact mode it was in.
+
+### Extension API
+
+Extensions get four mode-aware hooks on `ExtensionActions`:
+
+- `getModes(): AgentModeMetadata[]` — all known modes, in `/mode` listing order.
+- `getActiveMode(): string | undefined` — the mode currently applied, if any.
+- `getModePhase(): "bootstrap" | "resident"` — the current phase.
+- `setMode(name): boolean` / `clearMode()` — apply or clear a mode.
+
+---
+
 # Pi Agent Harness
+
+This is the home of the Pi agent harness project including our self extensible coding agent.
 
 This is the home of the Pi agent harness project including our self extensible coding agent.
 
