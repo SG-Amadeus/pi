@@ -2,7 +2,6 @@
 # Create the deterministic source archive uploaded with GitHub releases.
 #
 # Usage:
-#   npm run hydrate:model-data
 #   ./scripts/create-source-archive.sh --version <version> --ref <git-ref> --out <archive.tar.gz>
 
 set -euo pipefail
@@ -79,20 +78,6 @@ fi
 mkdir -p "$(dirname "$output")"
 output="$(cd "$(dirname "$output")" && pwd)/$(basename "$output")"
 
-model_data_dir="packages/ai/src/providers/data"
-if [[ ! -f "${model_data_dir}/.manifest.json" ]]; then
-    echo "Generated model data is missing. Run npm run hydrate:model-data first." >&2
-    exit 1
-fi
-
-shopt -s nullglob
-model_data_files=("${model_data_dir}/.manifest.json" "${model_data_dir}"/*.json)
-shopt -u nullglob
-if [[ ${#model_data_files[@]} -eq 1 ]]; then
-    echo "Generated model data is missing from ${model_data_dir}" >&2
-    exit 1
-fi
-
 temporary_archive="$(mktemp "${output}.tmp.XXXXXX")"
 temporary_index="$(mktemp "${output}.index.XXXXXX")"
 manifest="$(mktemp "${output}.manifest.XXXXXX")"
@@ -100,11 +85,9 @@ validation_root="$(mktemp -d "${output}.validation.XXXXXX")"
 rm -f "$temporary_index"
 trap 'rm -f "$temporary_archive" "$temporary_index" "$manifest"; rm -rf "$validation_root"' EXIT
 
-# Add the ignored release model-data snapshot to a temporary index based on the
-# release commit. Archiving the resulting tree keeps the source artifact
-# deterministic for the same commit and generated model data.
+# Build a temporary index based on the release commit. Archiving the resulting
+# tree keeps the source artifact deterministic for the same commit.
 GIT_INDEX_FILE="$temporary_index" git read-tree "$commit"
-GIT_INDEX_FILE="$temporary_index" git add -f -- "${model_data_files[@]}"
 archive_tree="$(GIT_INDEX_FILE="$temporary_index" git write-tree)"
 archive_mtime="$(git show -s --format=%ct "$commit")"
 
@@ -119,7 +102,6 @@ required_paths=(
     "scripts/build-binaries.sh"
     "packages/ai/src/models.generated.ts"
     "packages/ai/src/image-models.generated.ts"
-    "packages/ai/src/providers/data/.manifest.json"
     "packages/coding-agent/package.json"
     "packages/coding-agent/src/utils/image-resize-worker.ts"
     "packages/coding-agent/src/core/export-html/template.css"
@@ -143,7 +125,6 @@ if grep -Eq '(^|/)node_modules/|(^|/)packages/coding-agent/binaries/' "$manifest
 fi
 
 tar -xzf "$temporary_archive" -C "$validation_root"
-node "${validation_root}/${archive_root}/packages/ai/scripts/check-model-data.ts"
 
 mv "$temporary_archive" "$output"
 trap 'rm -f "$temporary_index" "$manifest"; rm -rf "$validation_root"' EXIT
